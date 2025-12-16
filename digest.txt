@@ -1,0 +1,676 @@
+Directory structure:
+└── tplink_switch_manager/
+    ├── __init__.py
+    ├── constants.py
+    ├── core.py
+    ├── crypto.py
+    ├── exceptions.py
+    ├── parsers.py
+    ├── utils.py
+    └── features/
+        ├── __init__.py
+        ├── erps.py
+        ├── monitoring.py
+        ├── qos.py
+        ├── security.py
+        ├── switching.py
+        ├── system.py
+        └── vlan.py
+
+================================================
+FILE: __init__.py
+================================================
+# tplink_switch_manager/__init__.py
+
+from .core import BaseClient
+from .features.system import SystemMixin
+from .features.switching import SwitchingMixin
+from .features.vlan import VlanMixin
+from .features.qos import QosMixin
+from .features.security import SecurityMixin
+from .features.monitoring import MonitoringMixin
+from .features.erps import ErpsMixin
+from .exceptions import TPLinkException
+
+class TPLinkSwitchClient(BaseClient, SystemMixin, SwitchingMixin, VlanMixin, 
+                         QosMixin, SecurityMixin, MonitoringMixin, ErpsMixin):
+    """
+    全功能 TP-Link 交换机管理客户端
+    """
+    def __init__(self, ip, username, password, extra_cookies=None, timeout=10):
+        super().__init__(ip, username, password, extra_cookies, timeout)
+
+__all__ = ['TPLinkSwitchClient', 'TPLinkException']
+
+
+================================================
+FILE: constants.py
+================================================
+BASE_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36',
+}
+
+# 端口速率映射
+SPEED_MAP = {
+    1: "Auto", 2: "10M Half", 3: "10M Full", 
+    4: "100M Half", 5: "100M Full", 6: "1000M Full"
+}
+
+# 状态映射
+STATE_MAP = {0: "Disable", 1: "Enable"}
+
+
+
+================================================
+FILE: core.py
+================================================
+# tplink_switch_manager/core.py
+import requests
+from urllib.parse import urljoin
+from .crypto import get_encrypted_password
+from .parsers import extract_tid, extract_port_num
+from .constants import BASE_HEADERS
+from .exceptions import LoginFailedException
+from requests.adapters import HTTPAdapter
+
+
+class BaseClient:
+    def __init__(self, url, username, password, extra_cookies=None, timeout=10):
+        self.base_url = f"{url}"
+        self.username = username
+        self.password = password
+        self.timeout = timeout
+        
+        self.session = requests.Session()
+        self.session.headers.update(BASE_HEADERS)
+        self.session.headers.update({
+            "Connection": "close"
+        })
+        
+        # --- 新增功能：注入初始 Cookies ---
+        if extra_cookies:
+            self.session.cookies.update(extra_cookies)
+
+        self.token = None
+        self.max_ports = 26 
+
+    def update_cookies(self, cookies):
+        """
+        运行时动态添加或更新 Cookies
+        :param cookies: 字典, 如 {'custom_flag': '1'}
+        """
+        self.session.cookies.update(cookies)
+
+    def login(self):
+        encrypted_pwd = get_encrypted_password(self.password)
+        payload = {'username': self.username, 'password': encrypted_pwd, 'logon': '登录'}
+        
+        try:
+            # 1. Post Login
+            resp = self.session.post(
+                urljoin(self.base_url, 'logon.cgi'), 
+                data=payload,
+                timeout=self.timeout
+            )
+            resp.raise_for_status()
+            
+            # 2. Extract Token
+            self.token = extract_tid(resp.text)
+            if not self.token:
+                idx_resp = self.session.get(
+                    self.base_url,
+                    timeout=self.timeout
+                )
+
+                self.token = extract_tid(idx_resp.text)
+            
+            if not self.token:
+                raise LoginFailedException("Token not found.")
+            
+            # 3. Update Max Ports
+            if 'max_port_num' in resp.text:
+                self.max_ports = extract_port_num(resp.text)
+
+        except Exception as e:
+            raise LoginFailedException(str(e))
+
+    def get_page(self, page):
+        if not self.token: self.login()
+        resp = self.session.get(
+            urljoin(self.base_url, page), 
+            params={'token': self.token},
+            timeout=self.timeout
+        )
+        resp.encoding = 'utf-8'
+        return resp.text
+
+    def post_action(self, cgi, data):
+        if not self.token: self.login()
+        data['token'] = self.token
+        resp = self.session.post(
+            urljoin(self.base_url, cgi), 
+            data=data,
+            timeout=self.timeout
+        )
+        return resp
+
+
+================================================
+FILE: crypto.py
+================================================
+def security_encode(input_str, key1, key2):
+    k = key2
+    result = ""
+    len_input = len(input_str)
+    len_key1 = len(key1)
+    len_k = len(k)
+    h = len_input if len_input > len_key1 else len_key1
+    
+    for g in range(h):
+        l_val = 187
+        i_val = 187
+        if g >= len_input:
+            i_val = ord(key1[g])
+        elif g >= len_key1:
+            l_val = ord(input_str[g])
+        else:
+            l_val = ord(input_str[g])
+            i_val = ord(key1[g])
+        index = (l_val ^ i_val) % len_k
+        result += k[index]
+    return result
+
+def get_encrypted_password(password):
+    val_b = "RDpbLfCPsJZ7fiv"
+    val_a = "yLwVl0zKqws7LgKPRQ84Mdt708T1qQ3Ha7xv3H7NyU84p21BriUWBU43odz3iP4rBL3cD02KZciXTysVXiV8ngg6vL48rPJyAUw0HurW20xqxv9aYb4M9wK1Ae0wlro510qXeU07kV57fQMc8L6aLgMLwygtc0F10a0Dg70TOoouyFhdysuRMO51yY5ZlOZZLEal1h0t9YQW0Ko7oBwmCAHoic4HYbUyVeU3sfQ1xtXcPcf1aT303wAQhv66qzW"
+    return security_encode(password, val_b, val_a)
+
+
+
+================================================
+FILE: exceptions.py
+================================================
+class TPLinkException(Exception): pass
+class LoginFailedException(TPLinkException): pass
+class RequestFailedException(TPLinkException): pass
+class DataParsingException(TPLinkException): pass
+
+
+
+================================================
+FILE: parsers.py
+================================================
+import re
+import ast
+from .exceptions import DataParsingException
+
+def extract_js_variable(html_content, var_name):
+    """
+    提取 HTML 中的 JS 变量，支持 Object {}, Array [], 和 new Array()
+    """
+    # 1. 尝试匹配 new Array(...) 语法 (常见于旧版 TPLink固件)
+    # 匹配: var bcInfo = new Array(\n0,0,0...);
+    pattern_new_array = re.compile(
+        r'var\s+' + re.escape(var_name) + r'\s*=\s*new\s+Array\((.*?)\)', 
+        re.DOTALL | re.IGNORECASE
+    )
+    match_new_array = pattern_new_array.search(html_content)
+    
+    if match_new_array:
+        raw_content = match_new_array.group(1)
+        # 将 JS 的 new Array(1,2,3) 内容包裹为 Python 列表 [1,2,3]
+        try:
+            # Python 的 eval 可以处理数字列表、换行符和尾部逗号
+            return eval(f"[{raw_content}]")
+        except Exception as e:
+            print(f"Warning: Failed to parse new Array content for {var_name}: {e}")
+            return []
+
+    # 2. 尝试匹配标准字面量 {...} 或 [...]
+    # 这里的正则使用了非贪婪匹配，并增加 lookahead 确保匹配完整
+    pattern_literal = re.compile(
+        r'var\s+' + re.escape(var_name) + r'\s*=\s*({.*?}|\[.*?\])(?=\s*;|\s+var|\s*<|\s*$)', 
+        re.DOTALL
+    )
+    
+    match_literal = pattern_literal.search(html_content)
+    # 如果 lookahead 失败，尝试简单的非贪婪匹配作为回退
+    if not match_literal:
+        pattern_literal_fallback = re.compile(
+            r'var\s+' + re.escape(var_name) + r'\s*=\s*({.*?}|\[.*?\])', 
+            re.DOTALL
+        )
+        match_literal = pattern_literal_fallback.search(html_content)
+
+    if match_literal:
+        raw_js = match_literal.group(1)
+        # 预处理：给未加引号的键加引号 (key: -> "key":)
+        raw_js = re.sub(r'([a-zA-Z0-9_]+)\s*:', r'"\1":', raw_js)
+        # 预处理：保留十六进制 0x...
+        raw_js = re.sub(r'0x([0-9a-fA-F]+)', r'0x\1', raw_js) 
+        
+        try:
+            return eval(raw_js) 
+        except Exception as e:
+            print(f"Warning: Failed to parse literal for {var_name}: {e}")
+            return None
+
+    return None
+
+def extract_tid(html_content):
+    """
+    Extracts the global Token ID (g_tid) from index.html or other pages.
+    Compatible with:
+    1. var g_tid=2123408165;
+    2. var g_Lan=0,...,g_tid=2123408165;
+    """
+    pattern = re.compile(r'g_tid\s*=\s*["\']?(\d+)["\']?')
+    match = pattern.search(html_content)
+    
+    if match:
+        return match.group(1)
+    return None
+
+def extract_port_num(html_content):
+    pattern = re.compile(r'max_port_num\s*=\s*(\d+)')
+    match = pattern.search(html_content)
+    return int(match.group(1)) if match else 26
+
+
+
+================================================
+FILE: utils.py
+================================================
+def bitmap_to_ports(bitmap):
+    """将整数位图转换为端口列表 [1, 2, 5]"""
+    ports = []
+    # TP-Link 通常使用 32 位整数，第 0 位代表端口 1
+    # 但根据 swc1 的数据，port 1 对应 1<<0
+    current = 1
+    mask = 1
+    # 假设最大 28 口 (swc1 为 26)
+    for i in range(1, 33):
+        if bitmap & mask:
+            ports.append(i)
+        mask <<= 1
+    return ports
+
+def ports_to_bitmap(port_list):
+    """将端口列表转换为整数位图"""
+    bitmap = 0
+    for p in port_list:
+        if p > 0:
+            bitmap |= (1 << (p - 1))
+    return bitmap
+
+
+
+================================================
+FILE: features/__init__.py
+================================================
+[Empty file]
+
+
+================================================
+FILE: features/erps.py
+================================================
+from ..parsers import extract_js_variable
+
+class ErpsMixin:
+    def get_erps_rings(self):
+        """erpsGlobalRpm.htm"""
+        html = self.get_page('erpsGlobalRpm.htm')
+        # ringConf: 数组的数组 [[id, mode, role, cvlan, ver, revert, ...], ...]
+        rings = extract_js_variable(html, 'ringConf') or []
+        res = []
+        for r in rings:
+            res.append({
+                "ring_id": r[0],
+                "mode": "Major" if r[1]==0 else "Sub",
+                "role": r[2], # 字符串直接显示
+                "control_vlan": r[3],
+                "version": r[4],
+                "revert": bool(r[5]),
+                "port0": r[6], # 端口号
+                "port1": r[7]
+            })
+        return res
+
+    def create_erps_ring(self, ring_id, description, cvlan, port0, port1):
+        """
+        erpsGlobalRpm.cgi
+        需要极其复杂的参数组合，这里提供核心参数结构
+        """
+        data = {
+            'txt_ring_id': ring_id,
+            'txt_ring_des': description,
+            'txt_ring_cvlan': cvlan,
+            'ring_mode': 0, # Major
+            'txt_ring_version': 2,
+            'add_ring': 'Create'
+        }
+        self.post_action('erpsGlobalRpm.cgi', data)
+        # 端口绑定通常在 erpsPortRpm.htm 进行，逻辑类似
+
+
+
+================================================
+FILE: features/monitoring.py
+================================================
+from ..parsers import extract_js_variable
+
+class MonitoringMixin:
+    def get_cable_diag(self):
+        """CableDiagRpm.htm"""
+        html = self.get_page('CableDiagRpm.htm')
+        states = extract_js_variable(html, 'cablestate') or []
+        lengths = extract_js_variable(html, 'cablelength') or []
+        res = []
+        state_map = {0: "No Cable", 1: "Normal", 2: "Open", 3: "Short"}
+        for i in range(len(states)):
+            if states[i] == -1: continue
+            res.append({
+                "port": i+1,
+                "status": state_map.get(states[i], "Other"),
+                "len": lengths[i]
+            })
+        return res
+
+    def start_cable_diag(self):
+        """触发检测: cable_diag_get.cgi"""
+        # 通常这会触发后台检测，然后需要刷新页面获取结果
+        self.post_action('cable_diag_get.cgi', {})
+
+    def get_statistics(self, port_id):
+        """PortStatisticsAllRpm.htm"""
+        url = f"PortStatisticsAllRpm.htm?port={port_id-1}" # 0-indexed
+        html = self.get_page(url)
+        rx = extract_js_variable(html, 'pkts_rx_info') or []
+        tx = extract_js_variable(html, 'pkts_tx_info') or []
+        return {"rx": rx, "tx": tx}
+
+
+
+================================================
+FILE: features/qos.py
+================================================
+from ..parsers import extract_js_variable
+
+class QosMixin:
+    def get_bandwidth_limits(self):
+        """QosBandWidthControlRpm.htm"""
+        html = self.get_page('QosBandWidthControlRpm.htm')
+        # bcInfo 是扁平数组 [Ingress, Egress, LagID, Ingress, Egress, LagID...]
+        bc = extract_js_variable(html, 'bcInfo') or []
+        res = []
+        for i in range(0, len(bc), 3):
+            port = (i // 3) + 1
+            if port > self.max_ports: break
+            res.append({
+                "port": port,
+                "ingress": bc[i],
+                "egress": bc[i+1]
+            })
+        return res
+
+    def set_bandwidth_limit(self, port_id, ingress, egress):
+        data = {
+            'igrRate': ingress,
+            'egrRate': egress,
+            'applay': 'Apply',
+            f'sel_{port_id}': 1
+        }
+        self.post_action('qos_bandwidth_set.cgi', data)
+
+    def get_storm_control(self):
+        """QosStormControlRpm.htm"""
+        html = self.get_page('QosStormControlRpm.htm')
+        # scInfo: [Rate, TypeMask, LagID, ...]
+        sc = extract_js_variable(html, 'scInfo') or []
+        res = []
+        for i in range(0, len(sc), 3):
+            port = (i // 3) + 1
+            if port > self.max_ports: break
+            type_mask = sc[i+1]
+            res.append({
+                "port": port,
+                "rate": sc[i],
+                "ul_frame": bool(type_mask & 1),
+                "multicast": bool(type_mask & 2),
+                "broadcast": bool(type_mask & 4),
+                "enable": sc[i] > 0
+            })
+        return res
+
+
+
+================================================
+FILE: features/security.py
+================================================
+from ..parsers import extract_js_variable
+
+class SecurityMixin:
+    def get_dhcp_snooping_config(self):
+        """DhcpSnoopingRpm.htm"""
+        html = self.get_page('DhcpSnoopingRpm.htm')
+        ds = extract_js_variable(html, 'dhcp_ds') or {}
+        
+        # 提取端口配置
+        ports = []
+        trust = ds.get('trust', [])
+        for i in range(self.max_ports):
+            ports.append({
+                "port": i+1,
+                "trust": bool(trust[i])
+            })
+            
+        return {
+            "global_enable": bool(ds.get('state', 0)),
+            "ports": ports
+        }
+
+    def set_dhcp_snooping_global(self, enable=True):
+        data = {
+            'dhcp_mode': 1 if enable else 0,
+            'Apply': 'Apply'
+        }
+        self.post_action('dhcp_enable_set.cgi', data)
+
+    def set_dhcp_snooping_port(self, port_id, trust=False):
+        """dhcp_port_set.cgi"""
+        # 该接口需要提交大量参数，通常是提交当前状态的完整快照或单口修改
+        # 简化版：仅修改 Trust
+        data = {
+            'portSel': port_id, # 多选框
+            'trustPort': 1 if trust else 0,
+            'option82': 0, # 保持默认或需要从 get 中获取当前值
+            'operation': 0,
+            'dhcp_submit': 'Apply'
+        }
+        self.post_action('dhcp_port_set.cgi', data)
+
+
+
+================================================
+FILE: features/switching.py
+================================================
+from ..parsers import extract_js_variable
+from ..constants import SPEED_MAP
+from ..utils import bitmap_to_ports, ports_to_bitmap
+
+class SwitchingMixin:
+    def get_ports(self):
+        html = self.get_page('MainRpm.htm')
+        p_info = extract_js_variable(html, 'port_info') or {}
+        res = []
+        for i in range(self.max_ports):
+            res.append({
+                "id": i+1,
+                "state": "Up" if p_info['state'][i] else "Down",
+                "speed_cfg": SPEED_MAP.get(p_info['spd_cfg'][i], "Unknown"),
+                "speed_act": SPEED_MAP.get(p_info['spd_act'][i], "Down"),
+                "rx": p_info['rx_rate'][i],
+                "tx": p_info['tx_rate'][i]
+            })
+        return res
+
+    def set_port_config(self, port_id, enable=True, speed=1, flow_ctrl=False):
+        """配置 PortSettingRpm.htm"""
+        data = {
+            'portid': port_id,
+            'state': 1 if enable else 0,
+            'speed': speed, # 1=Auto
+            'flowcontrol': 1 if flow_ctrl else 0,
+            'apply': 'Apply'
+        }
+        self.post_action('port_setting.cgi', data)
+
+    def get_port_isolation(self):
+        """解析 PortIsolationRpm.htm"""
+        html = self.get_page('PortIsolationRpm.htm')
+        conf = extract_js_variable(html, 'portIso_conf') or {}
+        isolation_list = []
+        if 'port_iso' in conf:
+            for i, bitmap in enumerate(conf['port_iso']):
+                isolation_list.append({
+                    "port": i+1,
+                    "forward_ports": bitmap_to_ports(bitmap)
+                })
+        return isolation_list
+
+    def set_port_isolation(self, port_id, forward_port_list):
+        """设置端口隔离 (单口设置)"""
+        # Port Isolation 设置通常是一个组提交，这里模拟选中一个端口设置其转发列表
+        # 注意：TP-Link 该页面通常提交 groupId (被选端口) 和 portid (转发端口列表)
+        data = {
+            'groupId': port_id, # 这里 groupId 其实是被配置的端口
+            'portid': forward_port_list, # 这是一个列表，requests 会处理为多个 portid 参数
+            'setapply': 'Apply'
+        }
+        self.post_action('port_isolation_set.cgi', data)
+
+    def search_mac(self, mac):
+        """MacSearchRpm.htm"""
+        data = {'txt_macAddress_search': mac, 'apply': 'Search'}
+        resp = self.post_action('mac_address_search.cgi', data)
+        mac_ds = extract_js_variable(resp.text, 'mac_ds') or {}
+        return mac_ds.get('mac_info', [])
+
+
+
+================================================
+FILE: features/system.py
+================================================
+from ..parsers import extract_js_variable
+
+class SystemMixin:
+    def get_system_info(self):
+        html = self.get_page('MainRpm.htm')
+        info = extract_js_variable(html, 'info_ds') or {}
+        return {
+            "desc": info.get('descriStr', [''])[0],
+            "mac": info.get('macStr', [''])[0],
+            "fw": info.get('firmwareStr', [''])[0],
+            "hw": info.get('hardwareStr', [''])[0],
+            "ip": info.get('ipStr', [''])[0],
+            "uptime": info.get('workTime', [''])[0]
+        }
+
+    def set_cloud_management(self, enable=True, server_url="", port=60443):
+        """配置 cloud.htm"""
+        data = {
+            'cloud_op': 'mngt_switch',
+            'status': 1 if enable else 0,
+            'cloud_type': 1, # 1=TP-LINK本地NMS
+            'apply': 'Confirm'
+        }
+        self.post_action('cloud.cgi', data)
+        
+        if enable and server_url:
+            tums_data = {
+                'tums_server': server_url,
+                'tums_port': port,
+                'apply': 'Submit'
+            }
+            self.post_action('tumscloud.cgi', tums_data)
+
+    def set_ip_settings(self, ip, mask, gateway, dhcp=False):
+        """配置 IpSettingRpm.htm"""
+        # 注意：此处有多个 Form，对应不同的 CGI
+        # 设置 IP/Mask/Gateway
+        data = {
+            'dhcpSetting': 'enable' if dhcp else 'disable',
+            'ip_address': ip,
+            'ip_netmask': mask,
+            'ip_gateway': gateway,
+            'submit': 'Apply'
+        }
+        self.post_action('ip_setting.cgi', data)
+
+    def reboot(self, save_config=True):
+        self.post_action('reboot.cgi', {
+            'reboot_op': 'reboot',
+            'save_op': 'on' if save_config else '',
+            'apply': 'Reboot'
+        })
+
+    def save_config_flash(self):
+        self.post_action('savingconfig.cgi', {'action_op': 'save'})
+
+
+
+================================================
+FILE: features/vlan.py
+================================================
+from ..parsers import extract_js_variable
+from ..utils import bitmap_to_ports
+
+class VlanMixin:
+    def get_8021q_vlans(self):
+        html = self.get_page('Vlan8021QRpm.htm')
+        ds = extract_js_variable(html, 'qvlan_ds') or {}
+        vlans = []
+        count = ds.get('count', 0)
+        vids = ds.get('vids', [])
+        names = ds.get('names', [])
+        tag = ds.get('tagMbrs', [])
+        untag = ds.get('untagMbrs', [])
+        
+        for i in range(count):
+            vlans.append({
+                "vid": vids[i],
+                "name": names[i],
+                "tagged": bitmap_to_ports(tag[i]),
+                "untagged": bitmap_to_ports(untag[i])
+            })
+        return vlans
+
+    def add_8021q_vlan(self, vid, name, tagged_ports=[], untagged_ports=[]):
+        """添加或编辑 VLAN"""
+        data = {
+            'vid': vid,
+            'vname': name,
+            'qvlan_add': 'Add/Edit'
+        }
+        # 构建 selType_X 参数: 0=Untag, 1=Tag, 2=Non
+        for i in range(1, self.max_ports + 1):
+            if i in tagged_ports:
+                data[f'selType_{i}'] = 1
+            elif i in untagged_ports:
+                data[f'selType_{i}'] = 0
+            else:
+                data[f'selType_{i}'] = 2
+        self.post_action('qvlanSet.cgi', data)
+
+    def set_pvid(self, port_list, pvid):
+        """Vlan8021QPvidRpm.htm"""
+        # 需要计算 port bitmap (sel_X) 和 pbm
+        pbm = 0
+        for p in port_list:
+            pbm |= (1 << (p-1))
+            
+        # URL 提交方式比较特殊: vlanPvidSet.cgi?pbm=...&pvid=...
+        url = f"vlanPvidSet.cgi?pbm={pbm}&pvid={pvid}"
+        self.get_page(url) # 这里实际上是 GET 请求触发 CGI
+
+
