@@ -1,75 +1,83 @@
+# tplink_switch_manager/parsers.py
 import re
-import ast
+import chompjs  # 使用专门的 JS 解析库
 from .exceptions import DataParsingException
 
 def extract_js_variable(html_content, var_name):
     """
-    提取 HTML 中的 JS 变量，支持 Object {}, Array [], 和 new Array()
+    使用 chompjs 提取并解析 HTML 中的 JS 变量。
+    能完美处理嵌套对象、十六进制数值、注释和无引号键名。
+    同时兼容 new Array() 语法。
     """
-    # 1. 尝试匹配 new Array(...) 语法 (常见于旧版 TPLink固件)
-    # 匹配: var bcInfo = new Array(\n0,0,0...);
-    pattern_new_array = re.compile(
-        r'var\s+' + re.escape(var_name) + r'\s*=\s*new\s+Array\((.*?)\)', 
+    if not html_content:
+        return None
+
+    # 1. 定位变量定义
+    # 匹配模式: var var_name = ... ;
+    # 使用非贪婪匹配找到分号结尾
+    pattern = re.compile(
+        r'var\s+' + re.escape(var_name) + r'\s*=\s*(.*?);', 
         re.DOTALL | re.IGNORECASE
     )
-    match_new_array = pattern_new_array.search(html_content)
     
-    if match_new_array:
-        raw_content = match_new_array.group(1)
-        # 将 JS 的 new Array(1,2,3) 内容包裹为 Python 列表 [1,2,3]
-        try:
-            # Python 的 eval 可以处理数字列表、换行符和尾部逗号
-            return eval(f"[{raw_content}]")
-        except Exception as e:
-            print(f"Warning: Failed to parse new Array content for {var_name}: {e}")
-            return []
-
-    # 2. 尝试匹配标准字面量 {...} 或 [...]
-    # 这里的正则使用了非贪婪匹配，并增加 lookahead 确保匹配完整
-    pattern_literal = re.compile(
-        r'var\s+' + re.escape(var_name) + r'\s*=\s*({.*?}|\[.*?\])(?=\s*;|\s+var|\s*<|\s*$)', 
-        re.DOTALL
-    )
+    match = pattern.search(html_content)
     
-    match_literal = pattern_literal.search(html_content)
-    # 如果 lookahead 失败，尝试简单的非贪婪匹配作为回退
-    if not match_literal:
-        pattern_literal_fallback = re.compile(
-            r'var\s+' + re.escape(var_name) + r'\s*=\s*({.*?}|\[.*?\])', 
-            re.DOTALL
-        )
-        match_literal = pattern_literal_fallback.search(html_content)
-
-    if match_literal:
-        raw_js = match_literal.group(1)
-        # 预处理：给未加引号的键加引号 (key: -> "key":)
-        raw_js = re.sub(r'([a-zA-Z0-9_]+)\s*:', r'"\1":', raw_js)
-        # 预处理：保留十六进制 0x...
-        raw_js = re.sub(r'0x([0-9a-fA-F]+)', r'0x\1', raw_js) 
+    if match:
+        raw_js_obj = match.group(1).strip()
         
-        try:
-            return eval(raw_js) 
-        except Exception as e:
-            print(f"Warning: Failed to parse literal for {var_name}: {e}")
-            return None
+        # --- 修复逻辑开始 ---
+        # 处理 TP-Link 特有的 new Array() 语法
+        # 例如: var bcInfo = new Array(\n0,0,0,\n...);
+        if raw_js_obj.lower().startswith('new array'):
+            # 查找第一个 '(' 和最后一个 ')'
+            start_idx = raw_js_obj.find('(')
+            end_idx = raw_js_obj.rfind(')')
+            
+            if start_idx != -1 and end_idx != -1:
+                # 提取括号内的内容
+                content = raw_js_obj[start_idx+1:end_idx]
+                # 替换为列表字面量格式
+                raw_js_obj = f"[{content}]"
+        # --- 修复逻辑结束 ---
 
+        try:
+            # chompjs 可以处理换行符、尾部逗号和十六进制
+            return chompjs.parse_js_object(raw_js_obj)
+        except ValueError as e:
+            print(f"Warning: chompjs failed to parse {var_name}: {e}")
+            return None
+    
     return None
 
 def extract_tid(html_content):
     """
-    Extracts the global Token ID (g_tid) from index.html or other pages.
-    Compatible with:
-    1. var g_tid=2123408165;
-    2. var g_Lan=0,...,g_tid=2123408165;
+    从 index.html 或 MainRpm.htm 中提取全局 Token ID (g_tid)
     """
-    pattern = re.compile(r'g_tid\s*=\s*["\']?(\d+)["\']?')
+    if not html_content: return None
+    
+    # 匹配: var g_tid=2123408165; 或 g_tid = "..."
+    # chompjs 也可以用，但这里简单的正则通常足够且更快
+    pattern = re.compile(r'var\s+g_tid\s*=\s*["\']?(\d+)["\']?')
     match = pattern.search(html_content)
     
     if match:
         return match.group(1)
+        
+    # 备用匹配: g_tid在逗号分隔的列表中
+    # var g_Lan=0, ... ,g_tid=2123408165;
+    pattern_comma = re.compile(r'g_tid\s*=\s*["\']?(\d+)["\']?')
+    match_comma = pattern_comma.search(html_content)
+    if match_comma:
+        return match_comma.group(1)
+        
     return None
 
 def extract_port_num(html_content):
-    pattern = re.compile(r'max_port_num\s*=\s*(\d+)')
-    match = pattern.search(html_content)
-    return int(match.group(1)) if match else 26
+    if not html_content: return 26
+    
+    # 尝试提取 max_port_num
+    val = extract_js_variable(html_content, 'max_port_num')
+    if val is not None and isinstance(val, int):
+        return val
+        
+    return 26

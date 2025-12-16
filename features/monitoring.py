@@ -1,3 +1,4 @@
+# tplink_switch_manager/features/monitoring.py
 from ..parsers import extract_js_variable
 
 class MonitoringMixin:
@@ -6,9 +7,14 @@ class MonitoringMixin:
         html = self.get_page('CableDiagRpm.htm')
         states = extract_js_variable(html, 'cablestate') or []
         lengths = extract_js_variable(html, 'cablelength') or []
+        
         res = []
-        state_map = {0: "No Cable", 1: "Normal", 2: "Open", 3: "Short"}
-        for i in range(len(states)):
+        state_map = {0: "No Cable", 1: "Normal", 2: "Open", 3: "Short", 4: "Open-Short", 5: "Cross"}
+        
+        # 确保数据长度一致
+        length = min(len(states), len(lengths), self.max_ports)
+        
+        for i in range(length):
             if states[i] == -1: continue
             res.append({
                 "port": i+1,
@@ -19,12 +25,11 @@ class MonitoringMixin:
 
     def start_cable_diag(self):
         """触发检测: cable_diag_get.cgi"""
-        # 通常这会触发后台检测，然后需要刷新页面获取结果
         self.post_action('cable_diag_get.cgi', {})
 
     def get_statistics(self, port_id):
         """PortStatisticsAllRpm.htm"""
-        url = f"PortStatisticsAllRpm.htm?port={port_id-1}" # 0-indexed
+        url = f"PortStatisticsAllRpm.htm?port={port_id-1}" 
         html = self.get_page(url)
         rx = extract_js_variable(html, 'pkts_rx_info') or []
         tx = extract_js_variable(html, 'pkts_tx_info') or []

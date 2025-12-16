@@ -1,12 +1,12 @@
+# tplink_switch_manager/utils.py
+
 def bitmap_to_ports(bitmap):
     """将整数位图转换为端口列表 [1, 2, 5]"""
     ports = []
-    # TP-Link 通常使用 32 位整数，第 0 位代表端口 1
-    # 但根据 swc1 的数据，port 1 对应 1<<0
     current = 1
     mask = 1
-    # 假设最大 28 口 (swc1 为 26)
-    for i in range(1, 33):
+    # 假设最大支持 52 口
+    for i in range(1, 53):
         if bitmap & mask:
             ports.append(i)
         mask <<= 1
