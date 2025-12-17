@@ -1,5 +1,7 @@
 # TP-Link Switch Manager
 
+A Python tool designed for managing legacy TP-Link switches, partially tested on the TL-SG2226 and TL-SG2024D.
+
 ```python
 from tplink_switch_manager import TPLinkSwitchClient
 import json
