@@ -3,13 +3,10 @@ from ..parsers import extract_js_variable
 
 class ErpsMixin:
     def get_erps_rings(self):
-        """erpsGlobalRpm.htm"""
         html = self.get_page('erpsGlobalRpm.htm')
-        # ringConf: [[id, mode, role, cvlan, ver, revert, ...], ...]
         rings = extract_js_variable(html, 'ringConf') or []
         res = []
         for r in rings:
-            # 确保 r 是列表且长度足够
             if isinstance(r, list) and len(r) > 7:
                 res.append({
                     "ring_id": r[0],
@@ -24,7 +21,6 @@ class ErpsMixin:
         return res
 
     def create_erps_ring(self, ring_id, description, cvlan, port0, port1):
-        """erpsGlobalRpm.cgi"""
         data = {
             'txt_ring_id': ring_id,
             'txt_ring_des': description,
@@ -34,3 +30,38 @@ class ErpsMixin:
             'add_ring': 'Create'
         }
         self.post_action('erpsGlobalRpm.cgi', data)
+
+    def create_erps_instance(self, instance_id, vlan_ids):
+        """
+        创建 ERPS 实例
+        :param instance_id: 1-8
+        :param vlan_ids: 字符串 "1-10,20" 或 列表 [1, 2]
+        """
+        if isinstance(vlan_ids, list):
+            vlan_str = ",".join(map(str, vlan_ids))
+        else:
+            vlan_str = str(vlan_ids)
+
+        # GET 提交: erpsInstanceRpm.htm?instanceId=...&vlanId=...&submit=1
+        params = {
+            'instanceId': instance_id,
+            'vlanId': vlan_str,
+            'submit': 1 # 1 = Create
+        }
+        self.get_action('erpsInstanceRpm.htm', params)
+
+    def delete_erps_instance(self, instance_ids):
+        """
+        删除 ERPS 实例
+        :param instance_ids: 单个ID或ID列表
+        """
+        if isinstance(instance_ids, int):
+            instance_ids = [instance_ids]
+        
+        if not instance_ids: return
+
+        params = {'delete': 1}
+        for idx, i_id in enumerate(instance_ids):
+            params[f'instance{idx+1}'] = i_id
+            
+        self.get_action('erpsInstanceRpm.htm', params)

@@ -2,7 +2,7 @@
 import requests
 from urllib.parse import urljoin
 from .crypto import get_encrypted_password
-from .parsers import extract_tid, extract_port_num
+from .parsers import extract_tid
 from .constants import BASE_HEADERS
 from .exceptions import LoginFailedException
 from .features.system import SystemMixin
@@ -22,7 +22,7 @@ class BaseClient:
         
         self.session = requests.Session()
         self.session.headers.update(BASE_HEADERS)
-        # 关键修正：TP-Link CGI 严格检查 Referer
+
         self.session.headers.update({
             "Referer": self.base_url,
             "Connection": "keep-alive"
@@ -43,8 +43,6 @@ class BaseClient:
         }
         
         try:
-            # 1. Post Login
-            # 注意：logon.cgi 通常返回一段 JS 重定向，而不是直接包含 Token
             login_url = urljoin(self.base_url, 'logon.cgi')
             resp = self.session.post(
                 login_url, 
@@ -53,18 +51,15 @@ class BaseClient:
             )
             resp.raise_for_status()
             
-            # 2. Extract Token form Index
-            # 登录成功后，必须访问主页 (index.html 或 MainRpm.htm) 才能拿到 g_tid
             index_resp = self.session.get(
                 self.base_url,
                 timeout=self.timeout
             )
-            index_resp.encoding = 'utf-8' # 强制 utf-8 防止乱码
+            index_resp.encoding = 'utf-8'
 
             self.token = extract_tid(index_resp.text)
             
             if not self.token:
-                # 尝试备用页面
                 main_resp = self.session.get(
                     urljoin(self.base_url, 'MainRpm.htm'),
                     timeout=self.timeout
@@ -72,19 +67,12 @@ class BaseClient:
                 self.token = extract_tid(main_resp.text)
 
             if not self.token:
-                raise LoginFailedException("Login successful but Token (g_tid) not found.")
-            
-            # 3. Get Port Num (可选，从 CableDiagRpm 或 MainRpm 获取)
-            # 为了准确，我们可以请求一次 CableDiagRpm.htm
-            diag_resp = self.get_page_raw('CableDiagRpm.htm')
-            if diag_resp:
-                self.max_ports = extract_port_num(diag_resp)
+                raise LoginFailedException("Login failed: Token (g_tid) not found.")
 
         except Exception as e:
             raise LoginFailedException(f"Connection failed: {str(e)}")
 
     def get_page_raw(self, page):
-        """内部方法：获取页面内容，带 Token"""
         if not self.token: self.login()
         try:
             resp = self.session.get(
@@ -98,7 +86,6 @@ class BaseClient:
             return None
 
     def get_page(self, page):
-        """公开方法：获取页面内容"""
         text = self.get_page_raw(page)
         if text is None:
             raise requests.RequestException(f"Failed to get page {page}")
@@ -110,7 +97,6 @@ class BaseClient:
         post_url = urljoin(self.base_url, cgi)
         params = {'token': self.token}
         
-        # Body 中也加入 token
         data['token'] = self.token
         
         resp = self.session.post(
@@ -138,7 +124,4 @@ class BaseClient:
 
 class TPLinkSwitchClient(BaseClient, SystemMixin, SwitchingMixin, VlanMixin, 
                          QosMixin, SecurityMixin, MonitoringMixin, ErpsMixin):
-    """
-    全功能 TP-Link 交换机管理客户端
-    """
     pass

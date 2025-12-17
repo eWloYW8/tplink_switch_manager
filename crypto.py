@@ -1,9 +1,6 @@
 # tplink_switch_manager/crypto.py
 
 def security_encode(input_str, key1, key2):
-    """
-    TP-Link 自定义异或加密算法 (对应 JS 中的 securityEncode)
-    """
     k = key2
     result = ""
     len_input = len(input_str)
@@ -26,9 +23,6 @@ def security_encode(input_str, key1, key2):
     return result
 
 def get_encrypted_password(password):
-    """
-    对应 JS 中的 hex_md5 函数 (实际不是 MD5，而是自定义算法)
-    """
     val_b = "RDpbLfCPsJZ7fiv"
     val_a = "yLwVl0zKqws7LgKPRQ84Mdt708T1qQ3Ha7xv3H7NyU84p21BriUWBU43odz3iP4rBL3cD02KZciXTysVXiV8ngg6vL48rPJyAUw0HurW20xqxv9aYb4M9wK1Ae0wlro510qXeU07kV57fQMc8L6aLgMLwygtc0F10a0Dg70TOoouyFhdysuRMO51yY5ZlOZZLEal1h0t9YQW0Ko7oBwmCAHoic4HYbUyVeU3sfQ1xtXcPcf1aT303wAQhv66qzW"
     return security_encode(password, val_b, val_a)

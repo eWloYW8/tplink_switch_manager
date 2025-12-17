@@ -21,7 +21,6 @@ class SecurityMixin:
         }
 
     def set_dhcp_snooping_global(self, enable=True):
-        # <form name=dhcp_enable_set action=dhcp_enable_set.cgi ...> (Method 缺失 -> GET)
         data = {
             'dhcp_mode': 1 if enable else 0,
             'Apply': 'Apply'
@@ -29,7 +28,6 @@ class SecurityMixin:
         self.get_action('dhcp_enable_set.cgi', data)
 
     def set_dhcp_snooping_port(self, port_id, trust=False):
-        # <form name=dhcp_port_set action=dhcp_port_set.cgi ...> (Method 缺失 -> GET)
         data = {
             'dhcpport': port_id,
             'trustPort': 1 if trust else 0,
@@ -38,3 +36,12 @@ class SecurityMixin:
             'dhcp_submit': 'Apply'
         }
         self.get_action('dhcp_port_set.cgi', data)
+
+    def set_loop_prevention(self, enable=True):
+        """设置环回保护状态"""
+        # LoopPreventionRpm.htm: <form action=loop_prevention_set.cgi>
+        data = {
+            'lpEn': 1 if enable else 0,
+            'apply': 'Apply'
+        }
+        self.get_action('loop_prevention_set.cgi', data)

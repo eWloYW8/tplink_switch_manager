@@ -3,12 +3,9 @@ from ..parsers import extract_js_variable
 
 class QosMixin:
     def get_bandwidth_limits(self):
-        """QosBandWidthControlRpm.htm"""
         html = self.get_page('QosBandWidthControlRpm.htm')
-        # bcInfo: [Ingress, Egress, LagID, Ingress, Egress, LagID...]
         bc = extract_js_variable(html, 'bcInfo') or []
         res = []
-        # 每3个一组
         count = len(bc) // 3
         for i in range(count):
             port = i + 1
@@ -31,9 +28,7 @@ class QosMixin:
         self.post_action('qos_bandwidth_set.cgi', data)
 
     def get_storm_control(self):
-        """QosStormControlRpm.htm"""
         html = self.get_page('QosStormControlRpm.htm')
-        # scInfo: [Rate, TypeMask, LagID, ...]
         sc = extract_js_variable(html, 'scInfo') or []
         res = []
         count = len(sc) // 3
@@ -55,9 +50,6 @@ class QosMixin:
         return res
         
     def set_storm_control(self, port_id, rate, ul_frame=False, multicast=False, broadcast=False, enable=True):
-        """
-        修正：添加了缺失的 state 参数
-        """
         type_mask = 0
         if ul_frame: type_mask |= 1
         if multicast: type_mask |= 2
@@ -65,9 +57,40 @@ class QosMixin:
         
         data = {
             'rate': rate,
-            'stormType': type_mask, # 这是一个 multi-select，CGI 通常接受位图值或数组
-            'state': 1 if enable else 0, # 关键修复：添加 state
+            'stormType': type_mask, 
+            'state': 1 if enable else 0, 
             'applay': 'Apply',
             f'sel_{port_id}': 1
         }
         self.post_action('qos_storm_set.cgi', data)
+
+    def set_qos_mode(self, mode):
+        """
+        设置全局 QoS 模式
+        :param mode: 0=Port Based, 1=802.1P Based, 2=DSCP Based
+        """
+        # QosBasicRpm.htm: <form name=qos_mode_set method=post action=qos_mode_set.cgi>
+        if mode not in [0, 1, 2]:
+            raise ValueError("Mode must be 0, 1, or 2")
+            
+        data = {
+            'rd_qosmode': mode,
+            'qosmode': 'Apply'
+        }
+        self.post_action('qos_mode_set.cgi', data)
+
+    def set_port_priority(self, port_id, priority_queue):
+        """
+        设置端口优先级 (仅在 Port Based 模式下有效)
+        :param priority_queue: 0=Lowest, 1=Normal, 2=Medium, 3=Highest
+        """
+        # QosBasicRpm.htm: <form name=qos_port_priority_set method=post action=qos_port_priority_set.cgi>
+        if priority_queue not in [0, 1, 2, 3]:
+            raise ValueError("Priority must be 0-3")
+
+        data = {
+            f'sel_{port_id}': 1,
+            'port_queue': priority_queue,
+            'apply': 'Apply'
+        }
+        self.post_action('qos_port_priority_set.cgi', data)

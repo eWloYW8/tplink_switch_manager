@@ -24,10 +24,7 @@ class SwitchingMixin:
         return res
 
     def set_port_config(self, port_id, enable=True, speed=1, flow_ctrl=False):
-        """
-        配置 PortSettingRpm.htm
-        HTML: <form name=port_setting action=port_setting.cgi enctype=...> (Method 缺失 -> GET)
-        """
+        """配置 PortSettingRpm.htm"""
         data = {
             'portid': port_id,
             'state': 1 if enable else 0,
@@ -51,10 +48,6 @@ class SwitchingMixin:
         return isolation_list
 
     def set_port_isolation(self, port_id, forward_port_list):
-        """
-        设置端口隔离
-        HTML: <form name=port_trunk_set action=port_isolation_set.cgi> (Method 缺失 -> GET)
-        """
         data = {
             'groupId': port_id, 
             'portid': forward_port_list,
@@ -63,10 +56,79 @@ class SwitchingMixin:
         self.get_action('port_isolation_set.cgi', data)
 
     def search_mac(self, mac):
-        """MacSearchRpm.htm (Method 缺失 -> GET)"""
         data = {'txt_macAddress_search': mac, 'apply': 'Search'}
-        # 这里实际上返回的是页面 HTML，不仅是动作，所以用 get_page_raw 带参数更合适
-        # 或者用 get_action 获取响应后解析
         resp = self.get_action('mac_address_search.cgi', data)
         mac_ds = extract_js_variable(resp.text, 'mac_ds') or {}
         return mac_ds.get('mac_info', [])
+
+
+    def create_port_trunk(self, lag_id, member_ports):
+        """
+        创建汇聚组 (LAG)
+        :param lag_id: 1-8
+        :param member_ports: 端口号列表，最多4个
+        """
+        if not (1 <= lag_id <= 8):
+            raise ValueError("LAG ID must be between 1 and 8")
+        
+        if len(member_ports) < 2 or len(member_ports) > 4:
+            raise ValueError("LAG members must be between 2 and 4 ports")
+
+        data = {
+            'groupId': lag_id,
+            'portid': member_ports, # requests 会转为 portid=1&portid=2...
+            'setapply': 'Apply'
+        }
+        self.get_action('port_trunk_set.cgi', data)
+
+    def delete_port_trunk(self, lag_ids):
+        """
+        删除汇聚组
+        :param lag_ids: 单个ID或ID列表
+        """
+        if isinstance(lag_ids, int):
+            lag_ids = [lag_ids]
+            
+        if not lag_ids: return
+
+        # HTML: <form name=port_trunk_display action=port_trunk_display.cgi>
+        # 参数名: chk_trunk
+        data = {
+            'chk_trunk': lag_ids,
+            'setDelete': 'Delete'
+        }
+        self.get_action('port_trunk_display.cgi', data)
+
+
+    def set_mirror_destination(self, enable=True, dest_port_id=0):
+        """
+        设置镜像目的端口 (监控端口)
+        :param enable: 是否开启
+        :param dest_port_id: 目的端口号
+        """
+        # HTML: <form name=mirror_enabled_set action=mirror_enabled_set.cgi>
+        data = {
+            'state': 1 if enable else 0,
+            'mirroringport': dest_port_id if enable else 0,
+            'mirrorenable': 'Apply'
+        }
+        self.get_action('mirror_enabled_set.cgi', data)
+
+    def set_mirror_source(self, source_ports, ingress=False, egress=False):
+        """
+        设置镜像源端口 (被监控端口)
+        :param source_ports: 端口号列表
+        :param ingress: 监控入流量
+        :param egress: 监控出流量
+        """
+        if not source_ports: return
+
+        # HTML: <form name=mirrored_port_set action=mirrored_port_set.cgi>
+        # 参数: mirroredport (列表), ingressState, egressState
+        data = {
+            'mirroredport': source_ports,
+            'ingressState': 1 if ingress else 0,
+            'egressState': 1 if egress else 0,
+            'mirrored_submit': 'Apply'
+        }
+        self.get_action('mirrored_port_set.cgi', data)
